@@ -22,13 +22,9 @@ ticket_counter = {"count": 0}
 
 
 # ───────────────────────────────────────────────
-# MODAL — Formulaire de commande (sans paiement)
+# MODAL — Formulaire de commande
 # ───────────────────────────────────────────────
 class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
-    def __init__(self, moyen_paiement: str):
-        super().__init__()
-        self.moyen_paiement = moyen_paiement
-
     montant = discord.ui.TextInput(
         label="Montant HT (sous-total)",
         placeholder="Min. 20 HT – Max. 23 HT",
@@ -42,6 +38,13 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         style=discord.TextStyle.paragraph,
         min_length=10,
         max_length=200,
+        required=True,
+    )
+    moyen_paiement = discord.ui.TextInput(
+        label="Moyen de paiement",
+        placeholder="Revolut / PayPal / Virement",
+        min_length=2,
+        max_length=50,
         required=True,
     )
 
@@ -104,7 +107,7 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         embed.add_field(name="👤 Client", value=f"{user.mention}\n`{user.id}`", inline=True)
         embed.add_field(name="🔢 Ticket", value=f"`#{ticket_num:04d}`", inline=True)
         embed.add_field(name="💰 Montant HT", value=f"`{self.montant.value} HT`", inline=True)
-        embed.add_field(name="💳 Moyen de paiement", value=f"`{self.moyen_paiement}`", inline=True)
+        embed.add_field(name="💳 Moyen de paiement", value=f"`{self.moyen_paiement.value}`", inline=True)
         embed.add_field(name="📍 Adresse de livraison", value=f"```{self.adresse.value}```", inline=False)
         embed.set_footer(text="Uber Eats à -50% • La Dalle")
 
@@ -128,34 +131,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         await interaction.followup.send(
             f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True
         )
-
-
-# ───────────────────────────────────────────────
-# SELECT — Menu déroulant moyen de paiement
-# ───────────────────────────────────────────────
-class PaiementSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="PayPal", value="PayPal", emoji="💳"),
-            discord.SelectOption(label="Revolut", value="Revolut", emoji="🔄"),
-            discord.SelectOption(label="Virement bancaire", value="Virement bancaire", emoji="🏦"),
-        ]
-        super().__init__(
-            placeholder="Sélectionnez votre moyen de paiement",
-            options=options,
-            min_values=1,
-            max_values=1,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        moyen = self.values[0]
-        await interaction.response.send_modal(CommandeModal(moyen_paiement=moyen))
-
-
-class PaiementView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(PaiementSelect())
 
 
 # ───────────────────────────────────────────────
@@ -200,12 +175,7 @@ class CommanderView(discord.ui.View):
         custom_id="open_commande",
     )
     async def commander(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="💳 Moyen de paiement",
-            description="Sélectionne ton moyen de paiement pour continuer.",
-            color=0x06C167,
-        )
-        await interaction.response.send_message(embed=embed, view=PaiementView(), ephemeral=True)
+        await interaction.response.send_modal(CommandeModal())
 
 
 # ───────────────────────────────────────────────
@@ -229,7 +199,6 @@ async def panel(interaction: discord.Interaction):
         ),
         color=0x06C167,
     )
-    embed.set_image(url="https://i.imgur.com/kugHazj.jpeg")
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
 
     await interaction.response.send_message(embed=embed, view=CommanderView())
