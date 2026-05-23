@@ -35,7 +35,7 @@ def is_vendeur(interaction: discord.Interaction) -> bool:
 class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
     montant = discord.ui.TextInput(
         label="Montant HT (sous-total)",
-        placeholder="Min. 20 HT – Max. 23 HT",
+        placeholder="Min. 20 HT",
         min_length=1,
         max_length=10,
         required=True,
