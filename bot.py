@@ -48,13 +48,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         max_length=50,
         required=True,
     )
-    planning = discord.ui.TextInput(
-        label="Type de commande",
-        placeholder="Maintenant ou Planification (précise la date/heure)",
-        min_length=3,
-        max_length=100,
-        required=True,
-    )
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -114,7 +107,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         )
         embed.add_field(name="👤 Client", value=f"{user.mention}\n`{user.id}`", inline=True)
         embed.add_field(name="🔢 Ticket", value=f"`#{ticket_num:04d}`", inline=True)
-        embed.add_field(name="⏰ Type de commande", value=f"`{self.planning.value}`", inline=True)
         embed.add_field(name="💰 Montant HT", value=f"`{self.montant.value} HT`", inline=True)
         embed.add_field(name="💳 Moyen de paiement", value=f"`{self.moyen_paiement.value}`", inline=True)
         embed.add_field(name="📍 Adresse de livraison", value=f"```{self.adresse.value}```", inline=False)
