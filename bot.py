@@ -6,10 +6,11 @@ import os
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 1507793475549265971          # Remplace par l'ID de ton serveur
-VENDEUR_ROLE_NAME = "Vendeur" # Nom exact du rôle vendeur
-CATEGORY_NAME = "Commandes - En attente"  # Nom exact de la catégorie
-LOG_CHANNEL_ID = None         # ID du salon de logs (optionnel)
+GUILD_ID = 1507793475549265971
+VENDEUR_ROLE_NAME = "Vendeur"
+CATEGORY_NAME = "Commandes - En attente"
+LOG_CHANNEL_ID = None
+IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"  # Remplace par ton image
 # =========================================================
 
 intents = discord.Intents.default()
@@ -21,13 +22,20 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 ticket_counter = {"count": 0}
 
 
+def is_vendeur(interaction: discord.Interaction) -> bool:
+    vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
+    if vendeur_role is None:
+        return interaction.user.guild_permissions.administrator
+    return vendeur_role in interaction.user.roles or interaction.user.guild_permissions.administrator
+
+
 # ───────────────────────────────────────────────
-# MODAL — Formulaire de commande
+# MODAL
 # ───────────────────────────────────────────────
 class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
     montant = discord.ui.TextInput(
         label="Montant HT (sous-total)",
-        placeholder="Min. 20 HT",
+        placeholder="Min. 20 HT – Max. 23 HT",
         min_length=1,
         max_length=10,
         required=True,
@@ -56,13 +64,9 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         ticket_counter["count"] += 1
         ticket_num = ticket_counter["count"]
 
-        # Trouver le rôle Vendeur
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
-
-        # Trouver la catégorie
         category = discord.utils.get(guild.categories, name=CATEGORY_NAME)
 
-        # Permissions
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(
@@ -86,17 +90,15 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
                 manage_messages=True,
             )
 
-        channel_name = f"ticket-{ticket_num:04d}"
+        channel_name = f"commande-{ticket_num:04d}"
         ticket_channel = await guild.create_text_channel(
             name=channel_name,
             overwrites=overwrites,
             category=category,
-            topic=f"Commande de {user.display_name} | Ticket #{ticket_num:04d}",
+            topic=f"Commande de {user.display_name} | N°{ticket_num:04d}",
         )
 
-        # ── Embed du ticket ──
         embed = discord.Embed(
-            title="",
             description=(
                 "**Un vendeur va vous prendre en charge dans les plus brefs délais. "
                 "En attendant, envoyez une capture d'écran de votre panier avec tous "
@@ -104,32 +106,17 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
             ),
             color=0x06C167,
         )
-        embed.add_field(
-            name="Montant HT (sous-total)",
-            value=f"```{self.montant.value}```",
-            inline=False,
-        )
-        embed.add_field(
-            name="Adresse complète",
-            value=f"```{self.adresse.value}```",
-            inline=False,
-        )
-        embed.add_field(
-            name="Moyens de paiement",
-            value=f"```{self.moyen_paiement.value}```",
-            inline=False,
-        )
-        embed.add_field(
-            name="Status",
-            value="```En attente```",
-            inline=False,
-        )
+        embed.add_field(name="Montant HT (sous-total)", value=f"```{self.montant.value}```", inline=False)
+        embed.add_field(name="Adresse complète", value=f"```{self.adresse.value}```", inline=False)
+        embed.add_field(name="Moyens de paiement", value=f"```{self.moyen_paiement.value}```", inline=False)
+        embed.add_field(name="Status", value="```En attente```", inline=False)
+        embed.set_image(url=IMAGE_URL)
 
-        view = TicketManageView(user_id=user.id)
         mention = user.mention
         if vendeur_role:
             mention += f" | {vendeur_role.mention}"
 
+        view = TicketInitView(user_id=user.id)
         await ticket_channel.send(content=mention, embed=embed, view=view)
 
         if LOG_CHANNEL_ID:
@@ -148,80 +135,118 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
 
 
 # ───────────────────────────────────────────────
-# VIEW — Boutons de gestion dans le ticket
+# VIEW 1 — Boutons initiaux : Prendre / Fermer
 # ───────────────────────────────────────────────
-class TicketManageView(discord.ui.View):
+class TicketInitView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=None)
         self.user_id = user_id
 
-    def is_vendeur(self, interaction: discord.Interaction) -> bool:
-        vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
-        if vendeur_role is None:
-            return interaction.user.guild_permissions.administrator
-        return vendeur_role in interaction.user.roles or interaction.user.guild_permissions.administrator
-
-    @discord.ui.button(label="Mettre en attente", style=discord.ButtonStyle.secondary, custom_id="en_attente")
-    async def mettre_en_attente(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_vendeur(interaction):
+    @discord.ui.button(label="✅ Prendre la commande", style=discord.ButtonStyle.success, custom_id="prendre_commande")
+    async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_vendeur(interaction):
             await interaction.response.send_message(
                 "❌ Tu dois avoir le rôle **Vendeur** pour effectuer cette action.", ephemeral=True
             )
             return
 
-        # Mettre à jour l'embed
-        old_embed = interaction.message.embeds[0]
-        new_embed = old_embed.copy()
-        # Remplacer le champ Status
-        new_fields = []
-        for field in new_embed.fields:
-            if field.name == "Status":
-                new_fields.append(discord.EmbedField(name="Status", value="```En attente```", inline=False))
-            else:
-                new_fields.append(field)
-        new_embed.clear_fields()
-        for f in new_fields:
-            new_embed.add_field(name=f.name, value=f.value, inline=f.inline)
+        vendeur_nom = interaction.user.display_name
 
-        await interaction.response.edit_message(embed=new_embed, view=self)
+        old_embed = interaction.message.embeds[0]
+        new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
+        for field in old_embed.fields:
+            if field.name == "Status":
+                new_embed.add_field(
+                    name="Status",
+                    value=f"```Pris en charge (par {vendeur_nom})```",
+                    inline=False,
+                )
+            else:
+                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_embed.set_image(url=IMAGE_URL)
+
+        new_view = TicketActiveView(user_id=self.user_id)
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.followup.send(
+            f"📦 Commande attribuée à {interaction.user.mention}."
+        )
+
+    @discord.ui.button(label="🔒 Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="fermer_init")
+    async def fermer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_vendeur(interaction):
+            await interaction.response.send_message(
+                "❌ Tu dois avoir le rôle **Vendeur** pour effectuer cette action.", ephemeral=True
+            )
+            return
+        embed = discord.Embed(
+            title="🔒 Ticket fermé",
+            description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.",
+            color=0xED4245,
+        )
+        await interaction.response.send_message(embed=embed)
+        await asyncio.sleep(3600)
+        await interaction.channel.delete()
+
+
+# ───────────────────────────────────────────────
+# VIEW 2 — Boutons après prise en charge
+# ───────────────────────────────────────────────
+class TicketActiveView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+
+    @discord.ui.button(label="Mettre en attente", style=discord.ButtonStyle.secondary, custom_id="en_attente")
+    async def en_attente(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_vendeur(interaction):
+            await interaction.response.send_message(
+                "❌ Tu dois avoir le rôle **Vendeur** pour effectuer cette action.", ephemeral=True
+            )
+            return
+
+        old_embed = interaction.message.embeds[0]
+        new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
+        for field in old_embed.fields:
+            if field.name == "Status":
+                new_embed.add_field(name="Status", value="```En attente```", inline=False)
+            else:
+                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_embed.set_image(url=IMAGE_URL)
+
+        new_view = TicketInitView(user_id=self.user_id)
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
         await interaction.followup.send(f"⏸️ Commande remise **en attente** par {interaction.user.mention}.")
 
     @discord.ui.button(label="Commande traitée", style=discord.ButtonStyle.success, custom_id="traitee")
-    async def commande_traitee(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_vendeur(interaction):
+    async def traitee(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_vendeur(interaction):
             await interaction.response.send_message(
                 "❌ Tu dois avoir le rôle **Vendeur** pour effectuer cette action.", ephemeral=True
             )
             return
 
-        # Mettre à jour l'embed
         old_embed = interaction.message.embeds[0]
-        new_embed = old_embed.copy()
-        new_fields = []
-        for field in new_embed.fields:
+        new_embed = discord.Embed(description=old_embed.description, color=discord.Color.green())
+        for field in old_embed.fields:
             if field.name == "Status":
-                new_fields.append(discord.EmbedField(
+                new_embed.add_field(
                     name="Status",
-                    value=f"```Pris en charge (par {interaction.user.display_name})```",
-                    inline=False
-                ))
+                    value=f"```Traitée (par {interaction.user.display_name})```",
+                    inline=False,
+                )
             else:
-                new_fields.append(field)
-        new_embed.clear_fields()
-        for f in new_fields:
-            new_embed.add_field(name=f.name, value=f.value, inline=f.inline)
-        new_embed.color = discord.Color.green()
+                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_embed.set_image(url=IMAGE_URL)
 
-        # Désactiver les boutons
         for item in self.children:
             item.disabled = True
 
         await interaction.response.edit_message(embed=new_embed, view=self)
         await interaction.followup.send(
-            f"✅ Commande **traitée** par {interaction.user.mention} ! Le salon sera supprimé dans **10 secondes**."
+            f"✅ Commande **traitée** par {interaction.user.mention} ! Suppression dans **1 heure**."
         )
-        await asyncio.sleep(10)
-        await interaction.channel.delete(reason=f"Commande traitée par {interaction.user}")
+        await asyncio.sleep(3600)
+        await interaction.channel.delete()
 
 
 # ───────────────────────────────────────────────
@@ -261,7 +286,7 @@ async def panel(interaction: discord.Interaction):
         ),
         color=0x06C167,
     )
-    embed.set_image(url="https://i.imgur.com/kugHazj.jpeg")
+    embed.set_image(url=IMAGE_URL)
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
     await interaction.response.send_message(embed=embed, view=CommanderView())
 
@@ -279,6 +304,8 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Erreur sync : {e}")
     bot.add_view(CommanderView())
+    bot.add_view(TicketInitView(user_id=0))
+    bot.add_view(TicketActiveView(user_id=0))
 
 
 bot.run(BOT_TOKEN)
