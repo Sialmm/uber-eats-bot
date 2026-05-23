@@ -229,6 +229,7 @@ async def panel(interaction: discord.Interaction):
         ),
         color=0x06C167,
     )
+    embed.set_image(url="https://i.imgur.com/kugHazj.jpeg")
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
 
     await interaction.response.send_message(embed=embed, view=CommanderView())
