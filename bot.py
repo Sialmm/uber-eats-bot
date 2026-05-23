@@ -8,9 +8,10 @@ import os
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
 GUILD_ID = 1507793475549265971
 VENDEUR_ROLE_NAME = "Vendeur"
-CATEGORY_NAME = "Commandes - En attente"
+CATEGORY_ATTENTE = "Commandes - En attente"
+CATEGORY_PRISE = "Commandes - Pris en charges"
 LOG_CHANNEL_ID = None
-IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"  # Remplace par ton image
+IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
 
 intents = discord.Intents.default()
@@ -65,7 +66,7 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         ticket_num = ticket_counter["count"]
 
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
-        category = discord.utils.get(guild.categories, name=CATEGORY_NAME)
+        category = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -119,16 +120,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         view = TicketInitView(user_id=user.id)
         await ticket_channel.send(content=mention, embed=embed, view=view)
 
-        if LOG_CHANNEL_ID:
-            log_channel = guild.get_channel(LOG_CHANNEL_ID)
-            if log_channel:
-                log_embed = discord.Embed(
-                    title="📋 Nouveau ticket créé",
-                    description=f"**Ticket :** {ticket_channel.mention}\n**Client :** {user.mention}",
-                    color=0x5865F2,
-                )
-                await log_channel.send(embed=log_embed)
-
         await interaction.followup.send(
             f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True
         )
@@ -150,8 +141,52 @@ class TicketInitView(discord.ui.View):
             )
             return
 
-        vendeur_nom = interaction.user.display_name
+        await interaction.response.defer()
 
+        guild = interaction.guild
+        channel = interaction.channel
+        vendeur = interaction.user
+        vendeur_nom = vendeur.display_name
+
+        # Trouver la catégorie "Pris en charges"
+        category_prise = discord.utils.get(guild.categories, name=CATEGORY_PRISE)
+        vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
+
+        # Nouvelles permissions : visible uniquement par le vendeur + le client + admins
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+            ),
+            vendeur: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_messages=True,
+            ),
+        }
+
+        # Récupérer le client depuis le topic ou les permissions actuelles
+        for target, overwrite in channel.overwrites.items():
+            if isinstance(target, discord.Member) and target.id != guild.me.id and target.id != vendeur.id:
+                overwrites[target] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                )
+
+        # Bloquer les autres vendeurs
+        if vendeur_role:
+            overwrites[vendeur_role] = discord.PermissionOverwrite(view_channel=False)
+
+        # Déplacer dans la catégorie "Pris en charges" + appliquer les nouvelles permissions
+        await channel.edit(category=category_prise, overwrites=overwrites)
+
+        # Mettre à jour l'embed
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
         for field in old_embed.fields:
@@ -166,10 +201,8 @@ class TicketInitView(discord.ui.View):
         new_embed.set_image(url=IMAGE_URL)
 
         new_view = TicketActiveView(user_id=self.user_id)
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
-        await interaction.followup.send(
-            f"📦 Commande attribuée à {interaction.user.mention}."
-        )
+        await interaction.message.edit(embed=new_embed, view=new_view)
+        await interaction.followup.send(f"📦 Commande attribuée à {vendeur.mention}.")
 
     @discord.ui.button(label="🔒 Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="fermer_init")
     async def fermer(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -204,6 +237,42 @@ class TicketActiveView(discord.ui.View):
             )
             return
 
+        await interaction.response.defer()
+
+        guild = interaction.guild
+        channel = interaction.channel
+        vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
+        category_attente = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
+
+        # Remettre les permissions d'origine (tous les vendeurs voient)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+            ),
+        }
+        if vendeur_role:
+            overwrites[vendeur_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_messages=True,
+            )
+        # Remettre le client
+        for target, overwrite in channel.overwrites.items():
+            if isinstance(target, discord.Member) and target.id != guild.me.id:
+                overwrites[target] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                )
+
+        await channel.edit(category=category_attente, overwrites=overwrites)
+
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
         for field in old_embed.fields:
@@ -214,7 +283,7 @@ class TicketActiveView(discord.ui.View):
         new_embed.set_image(url=IMAGE_URL)
 
         new_view = TicketInitView(user_id=self.user_id)
-        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.message.edit(embed=new_embed, view=new_view)
         await interaction.followup.send(f"⏸️ Commande remise **en attente** par {interaction.user.mention}.")
 
     @discord.ui.button(label="Commande traitée", style=discord.ButtonStyle.success, custom_id="traitee")
@@ -286,7 +355,7 @@ async def panel(interaction: discord.Interaction):
         ),
         color=0x06C167,
     )
-    embed.set_image(url=IMAGE_URL)
+    embed.set_image(url="https://i.imgur.com/kugHazj.jpeg")
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
     await interaction.response.send_message(embed=embed, view=CommanderView())
 
