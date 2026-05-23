@@ -6,7 +6,7 @@ import os
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 123456789       # Remplace par l'ID de ton serveur
+GUILD_ID = 1507793475549265971       # Remplace par l'ID de ton serveur
 CATEGORY_ID = None
 STAFF_ROLE_ID = None
 LOG_CHANNEL_ID = None
