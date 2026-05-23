@@ -201,7 +201,6 @@ async def panel(interaction: discord.Interaction):
         title="🛒 Commander",
         description=(
             "**Commande ton Uber Eats à -50%** simplement et rapidement.\n\n"
-            "Choisis d'abord l'option qui te convient : **Maintenant** ou **Planification**.\n\n"
             "Une fois le bouton sélectionné, tu devras renseigner **toutes les informations demandées**. "
             "Dès que c'est complété, **un ticket sera créé automatiquement**.\n\n"
             "Ta commande passera ensuite en attente jusqu'à ce qu'un **vendeur** la prenne en charge.\n\n"
