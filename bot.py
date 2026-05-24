@@ -7,10 +7,11 @@ from datetime import datetime
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 1507793475549265971
+GUILD_ID = 123456789
 VENDEUR_ROLE_NAME = "Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
+CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"  # Salon où envoyer le récap (crée-le sur Discord)
 IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
@@ -247,6 +248,11 @@ class TicketActiveView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
+        # Déplacer dans la catégorie Commandes - Traités
+        category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
+        if category_traitee:
+            await channel.edit(category=category_traitee)
+
         await interaction.response.edit_message(embed=new_embed, view=self)
         await interaction.followup.send(f"✅ Commande **traitée** par {vendeur.mention} ! Suppression dans **1 heure**.")
 
@@ -265,6 +271,37 @@ class TicketActiveView(discord.ui.View):
             recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
             recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
             await log_channel.send(embed=recap)
+
+            # ── Transcript complet de la discussion ──
+            transcript_lines = []
+            async for msg in channel.history(limit=None, oldest_first=True):
+                if msg.author.bot and not msg.embeds:
+                    continue
+                timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
+                author = msg.author.display_name
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.description:
+                            transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:200]}")
+                        for field in emb.fields:
+                            transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
+                if msg.content:
+                    transcript_lines.append(f"[{timestamp}] {author}: {msg.content}")
+                if msg.attachments:
+                    for att in msg.attachments:
+                        transcript_lines.append(f"[{timestamp}] {author} a envoyé une image: {att.url}")
+
+            transcript_text = "\n".join(transcript_lines)
+            transcript_bytes = transcript_text.encode("utf-8")
+            import io
+            file = discord.File(
+                fp=io.BytesIO(transcript_bytes),
+                filename=f"transcript-commande-{data.get('ticket_num', '0'):04d}.txt"
+            )
+            await log_channel.send(
+                content=f"📄 **Transcript complet — Commande N°{data.get('ticket_num', '?'):04d}**",
+                file=file
+            )
 
         # Nettoyage
         client_id = ticket_clients.pop(channel.id, None)
