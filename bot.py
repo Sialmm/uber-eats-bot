@@ -154,7 +154,7 @@ class TicketInitView(discord.ui.View):
         client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
         ticket_data.pop(interaction.channel.id, None)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(300)
         try:
             await interaction.channel.delete()
         except Exception:
@@ -244,7 +244,7 @@ class TicketActiveView(discord.ui.View):
             ticket_clients.pop(channel.id, None)
             clients_en_cours.discard(client_id)
             ticket_data.pop(channel.id, None)
-            await asyncio.sleep(3600)
+            await asyncio.sleep(300)
             try:
                 await channel.delete()
             except Exception:
@@ -293,52 +293,58 @@ class TicketActiveView(discord.ui.View):
         clients_en_cours.discard(client_id)
         ticket_data.pop(channel.id, None)
 
-        # Attendre 1h puis transcript + suppression
-        await asyncio.sleep(3600)
+        # Lancer la suppression + logs dans une tâche séparée
+        async def supprimer_apres_delai():
+            await asyncio.sleep(300)
+            # Transcript juste avant suppression
+            transcript_lines = []
+            try:
+                async for msg in channel.history(limit=None, oldest_first=True):
+                    timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
+                    if msg.content:
+                        transcript_lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.content}")
+                    if msg.attachments:
+                        for att in msg.attachments:
+                            transcript_lines.append(f"[{timestamp}] {msg.author.display_name} a envoyé: {att.url}")
+                    if msg.embeds:
+                        for emb in msg.embeds:
+                            if emb.description:
+                                transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:300]}")
+                            for field in emb.fields:
+                                transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
+            except Exception as e:
+                transcript_lines.append(f"Erreur : {e}")
 
-        transcript_lines = []
-        try:
-            async for msg in channel.history(limit=None, oldest_first=True):
-                timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
-                if msg.content:
-                    transcript_lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.content}")
-                if msg.attachments:
-                    for att in msg.attachments:
-                        transcript_lines.append(f"[{timestamp}] {msg.author.display_name} a envoyé: {att.url}")
-                if msg.embeds:
-                    for emb in msg.embeds:
-                        if emb.description:
-                            transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:300]}")
-                        for field in emb.fields:
-                            transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
-        except Exception as e:
-            transcript_lines.append(f"Erreur : {e}")
+            log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+            if log_channel:
+                recap = discord.Embed(
+                    title=f"📋 Récap — Commande N°{data.get('ticket_num', '?'):04d}",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(),
+                )
+                recap.add_field(name="👤 Client", value=f"`{data.get('client', '?')}`", inline=True)
+                recap.add_field(name="🧑‍💼 Vendeur", value=f"`{vendeur.display_name}`", inline=True)
+                recap.add_field(name="💰 Montant HT", value=f"`{data.get('montant', '?')}`", inline=True)
+                recap.add_field(name="💳 Paiement", value=f"`{data.get('paiement', '?')}`", inline=True)
+                recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
+                recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
+                try:
+                    await log_channel.send(embed=recap)
+                    transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
+                    file = discord.File(
+                        fp=io.BytesIO(transcript_text.encode("utf-8")),
+                        filename=f"transcript-commande-{data.get('ticket_num', 0):04d}.txt"
+                    )
+                    await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
+                except Exception as e:
+                    print(f"❌ Erreur logs : {e}")
 
-        log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
-        if log_channel:
-            recap = discord.Embed(
-                title=f"📋 Récap — Commande N°{data.get('ticket_num', '?'):04d}",
-                color=discord.Color.green(),
-                timestamp=datetime.now(),
-            )
-            recap.add_field(name="👤 Client", value=f"`{data.get('client', '?')}`", inline=True)
-            recap.add_field(name="🧑‍💼 Vendeur", value=f"`{vendeur.display_name}`", inline=True)
-            recap.add_field(name="💰 Montant HT", value=f"`{data.get('montant', '?')}`", inline=True)
-            recap.add_field(name="💳 Paiement", value=f"`{data.get('paiement', '?')}`", inline=True)
-            recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
-            recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
-            await log_channel.send(embed=recap)
-            transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
-            file = discord.File(
-                fp=io.BytesIO(transcript_text.encode("utf-8")),
-                filename=f"transcript-commande-{data.get('ticket_num', 0):04d}.txt"
-            )
-            await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
+            try:
+                await channel.delete()
+            except Exception:
+                pass
 
-        try:
-            await channel.delete()
-        except Exception:
-            pass
+        asyncio.ensure_future(supprimer_apres_delai())
 
 # ───────────────────────────────────────────────
 # VIEW — Bouton principal
