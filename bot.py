@@ -13,7 +13,7 @@ CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
-IMAGE_URL = "https://imgur.com/a/cbZZpkJ"
+IMAGE_URL = "https://imgur.com/a/UIWsOCo"
 # =========================================================
 intents = discord.Intents.default()
 intents.message_content = True
