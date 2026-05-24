@@ -5,30 +5,26 @@ import asyncio
 import os
 import io
 from datetime import datetime
-
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 123456789
-VENDEUR_ROLE_NAME = "Vendeur"
+GUILD_ID = 1507793475549265971
+VENDEUR_ROLE_NAME = "「🧑‍🍳」Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
 IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 ticket_counter = {"count": 0}
-ticket_clients = {}       # {channel_id: client_id}
-ticket_data = {}          # {channel_id: {...}}
-vendeur_stats = {}        # {vendeur_id: {"nom": str, "count": int}}
-clients_en_cours = set()  # client_id ayant un ticket ouvert
-
+ticket_clients = {}
+ticket_data = {}
+vendeur_stats = {}
+clients_en_cours = set()
 
 def is_vendeur(interaction: discord.Interaction) -> bool:
     vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
@@ -36,9 +32,7 @@ def is_vendeur(interaction: discord.Interaction) -> bool:
         return interaction.user.guild_permissions.administrator
     return vendeur_role in interaction.user.roles or interaction.user.guild_permissions.administrator
 
-
 def overwrites_prise(guild, client, vendeur, vendeur_role):
-    """Seul le vendeur qui a pris + le client voient."""
     ow = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True),
@@ -50,11 +44,8 @@ def overwrites_prise(guild, client, vendeur, vendeur_role):
         ow[vendeur_role] = discord.PermissionOverwrite(view_channel=False)
     return ow
 
-
 def overwrites_traitee(guild, client, vendeur, vendeur_role):
-    """Même chose pour Traités — seul le vendeur + client."""
     return overwrites_prise(guild, client, vendeur, vendeur_role)
-
 
 # ───────────────────────────────────────────────
 # MODAL
@@ -68,18 +59,13 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         user = interaction.user
-
-        # Anti-doublon
         if user.id in clients_en_cours:
             await interaction.followup.send("❌ Tu as déjà un ticket en cours ! Ferme-le avant d'en ouvrir un nouveau.", ephemeral=True)
             return
-
         ticket_counter["count"] += 1
         ticket_num = ticket_counter["count"]
-
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
-
         channel_name = f"「🔥」Commande - {ticket_num:04d}"
         ticket_channel = await guild.create_text_channel(
             name=channel_name,
@@ -88,7 +74,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         )
         await ticket_channel.edit(sync_permissions=True)
         await ticket_channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
-
         ticket_clients[ticket_channel.id] = user.id
         clients_en_cours.add(user.id)
         ticket_data[ticket_channel.id] = {
@@ -102,7 +87,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
             "vendeur": None,
             "vendeur_member": None,
         }
-
         embed = discord.Embed(
             description=(
                 "**Un vendeur va vous prendre en charge dans les plus brefs délais. "
@@ -116,14 +100,11 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         embed.add_field(name="Moyens de paiement", value=f"```{self.moyen_paiement.value}```", inline=False)
         embed.add_field(name="Status", value="```En attente```", inline=False)
         embed.set_image(url=IMAGE_URL)
-
         mention = user.mention
         if vendeur_role:
             mention += f" | {vendeur_role.mention}"
-
         await ticket_channel.send(content=mention, embed=embed, view=TicketInitView(user_id=user.id))
         await interaction.followup.send(f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True)
-
 
 # ───────────────────────────────────────────────
 # VIEW 1 — En attente
@@ -138,32 +119,20 @@ class TicketInitView(discord.ui.View):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-
         await interaction.response.defer()
-
         guild = interaction.guild
         channel = interaction.channel
         vendeur = interaction.user
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category_prise = discord.utils.get(guild.categories, name=CATEGORY_PRISE)
-
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
-
-        # Permissions strictes : seul ce vendeur + client
-        await channel.edit(
-            category=category_prise,
-            overwrites=overwrites_prise(guild, client, vendeur, vendeur_role),
-        )
-
-        # Stocker le vendeur
+        await channel.edit(category=category_prise, overwrites=overwrites_prise(guild, client, vendeur, vendeur_role))
         if channel.id in ticket_data:
             ticket_data[channel.id]["vendeur"] = vendeur.display_name
             ticket_data[channel.id]["vendeur_member"] = vendeur.id
-
         if vendeur.id not in vendeur_stats:
             vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
-
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
         for field in old_embed.fields:
@@ -172,7 +141,6 @@ class TicketInitView(discord.ui.View):
             else:
                 new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
         new_embed.set_image(url=IMAGE_URL)
-
         await interaction.message.edit(embed=new_embed, view=TicketActiveView(user_id=self.user_id))
         await interaction.followup.send(f"📦 Commande attribuée à {vendeur.mention}.")
 
@@ -192,7 +160,6 @@ class TicketInitView(discord.ui.View):
         except Exception:
             pass
 
-
 # ───────────────────────────────────────────────
 # VIEW 2 — Pris en charge
 # ───────────────────────────────────────────────
@@ -206,20 +173,16 @@ class TicketActiveView(discord.ui.View):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-
         await interaction.response.defer()
-
         guild = interaction.guild
         channel = interaction.channel
         category_attente = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
-
         await channel.edit(category=category_attente)
         await channel.edit(sync_permissions=True)
         if client:
             await channel.set_permissions(client, view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
-
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
         for field in old_embed.fields:
@@ -228,7 +191,6 @@ class TicketActiveView(discord.ui.View):
             else:
                 new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
         new_embed.set_image(url=IMAGE_URL)
-
         await interaction.message.edit(embed=new_embed, view=TicketInitView(user_id=self.user_id))
         await interaction.followup.send(f"⏸️ Commande remise **en attente** par {interaction.user.mention}.")
 
@@ -238,29 +200,58 @@ class TicketActiveView(discord.ui.View):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
 
-        # Vérifier qu'un lien de suivi Uber Eats a été envoyé
-        lien_trouve = False
-        async for msg in interaction.channel.history(limit=100):
-            if "ubereats.com/fr/orders/" in msg.content:
-                lien_trouve = True
-                break
-
-        if not lien_trouve:
-            client_id = ticket_clients.get(interaction.channel.id)
-            client_mention = f"<@{client_id}>" if client_id else "Client"
-            await interaction.response.send_message(
-                f"{client_mention} Vous avez fait **0 commande**. "
-                f"Aucun lien de suivi Uber Eats n'a été détecté, la commande n'est pas validée."
-            )
-            return
-
-        await interaction.response.defer()
-
         vendeur = interaction.user
         channel = interaction.channel
         guild = interaction.guild
         data = ticket_data.get(channel.id, {})
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
+        client_id = ticket_clients.get(channel.id)
+        client_mention = f"<@{client_id}>" if client_id else "Client"
+
+        # Vérifier qu'un lien de suivi Uber Eats a été envoyé
+        lien_trouve = False
+        async for msg in channel.history(limit=100):
+            if "ubereats.com/fr/orders/" in msg.content:
+                lien_trouve = True
+                break
+
+        if not lien_trouve:
+            # Déplacer dans Commandes - Traités
+            category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
+            client = guild.get_member(client_id) if client_id else None
+            if category_traitee:
+                await channel.edit(
+                    category=category_traitee,
+                    overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role),
+                )
+            # Désactiver les boutons
+            old_embed = interaction.message.embeds[0]
+            new_embed = discord.Embed(description=old_embed.description, color=discord.Color.red())
+            for field in old_embed.fields:
+                if field.name == "Status":
+                    new_embed.add_field(name="Status", value="```Non validée (pas de lien Uber Eats)```", inline=False)
+                else:
+                    new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            new_embed.set_image(url=IMAGE_URL)
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(embed=new_embed, view=self)
+            await interaction.followup.send(
+                f"{client_mention} Vous avez fait **0 commande**. "
+                f"Aucun lien de suivi Uber Eats n'a été détecté, la commande n'est pas validée."
+            )
+            # Nettoyage
+            ticket_clients.pop(channel.id, None)
+            clients_en_cours.discard(client_id)
+            ticket_data.pop(channel.id, None)
+            await asyncio.sleep(3600)
+            try:
+                await channel.delete()
+            except Exception:
+                pass
+            return
+
+        await interaction.response.defer()
 
         # Stats
         if vendeur.id not in vendeur_stats:
@@ -268,11 +259,9 @@ class TicketActiveView(discord.ui.View):
         vendeur_stats[vendeur.id]["count"] += 1
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
 
-        # Récupérer le client
-        client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
 
-        # Déplacer dans Commandes - Traités avec permissions strictes
+        # Déplacer dans Commandes - Traités
         category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
         if category_traitee:
             await channel.edit(
@@ -288,12 +277,10 @@ class TicketActiveView(discord.ui.View):
             else:
                 new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
         new_embed.set_image(url=IMAGE_URL)
-
         for item in self.children:
             item.disabled = True
-
         await interaction.message.edit(embed=new_embed, view=self)
-        client_mention = f"<@{ticket_clients.get(channel.id)}>" if ticket_clients.get(channel.id) else "client"
+
         nb_commandes = vendeur_stats.get(vendeur.id, {}).get("count", 1)
         await interaction.followup.send(
             f"Merci {client_mention} ! Vous avez fait **{nb_commandes} commande(s)**. "
@@ -301,15 +288,14 @@ class TicketActiveView(discord.ui.View):
             f"S'il y a un problème avec la commande, n'hésitez pas à mentionner votre vendeur {vendeur.mention}. À bientôt !"
         )
 
-        # Nettoyage des données
-        client_id = ticket_clients.pop(channel.id, None)
+        # Nettoyage
+        ticket_clients.pop(channel.id, None)
         clients_en_cours.discard(client_id)
         ticket_data.pop(channel.id, None)
 
-        # Attendre 1h avant suppression (les messages continuent d'arriver)
+        # Attendre 1h puis transcript + suppression
         await asyncio.sleep(3600)
 
-        # ── Transcript récupéré JUSTE AVANT la suppression ──
         transcript_lines = []
         try:
             async for msg in channel.history(limit=None, oldest_first=True):
@@ -326,9 +312,8 @@ class TicketActiveView(discord.ui.View):
                         for field in emb.fields:
                             transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
         except Exception as e:
-            transcript_lines.append(f"Erreur lors de la récupération des messages : {e}")
+            transcript_lines.append(f"Erreur : {e}")
 
-        # ── Envoi dans logs après l'heure d'attente ──
         log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
         if log_channel:
             recap = discord.Embed(
@@ -343,7 +328,6 @@ class TicketActiveView(discord.ui.View):
             recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
             recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
             await log_channel.send(embed=recap)
-
             transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
             file = discord.File(
                 fp=io.BytesIO(transcript_text.encode("utf-8")),
@@ -351,12 +335,10 @@ class TicketActiveView(discord.ui.View):
             )
             await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
 
-        # Suppression du salon
         try:
             await channel.delete()
         except Exception:
             pass
-
 
 # ───────────────────────────────────────────────
 # VIEW — Bouton principal
@@ -368,7 +350,6 @@ class CommanderView(discord.ui.View):
     @discord.ui.button(label="🛒 Commander maintenant", style=discord.ButtonStyle.success, custom_id="open_commande")
     async def commander(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CommandeModal())
-
 
 # ───────────────────────────────────────────────
 # COMMANDE SLASH — /panel
@@ -394,7 +375,6 @@ async def panel(interaction: discord.Interaction):
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
     await interaction.response.send_message(embed=embed, view=CommanderView())
 
-
 # ───────────────────────────────────────────────
 # COMMANDE SLASH — /stats
 # ───────────────────────────────────────────────
@@ -418,7 +398,6 @@ async def stats(interaction: discord.Interaction):
     embed.set_footer(text=f"Total : {sum(v['count'] for v in vendeur_stats.values())} commande(s) traitée(s)")
     await interaction.response.send_message(embed=embed)
 
-
 # ───────────────────────────────────────────────
 # EVENTS
 # ───────────────────────────────────────────────
@@ -428,7 +407,6 @@ async def on_guild_channel_delete(channel):
     if client_id:
         clients_en_cours.discard(client_id)
         ticket_data.pop(channel.id, None)
-
 
 @bot.event
 async def on_ready():
@@ -442,6 +420,5 @@ async def on_ready():
     bot.add_view(CommanderView())
     bot.add_view(TicketInitView(user_id=0))
     bot.add_view(TicketActiveView(user_id=0))
-
 
 bot.run(BOT_TOKEN)
