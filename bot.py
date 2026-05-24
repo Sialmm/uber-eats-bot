@@ -80,7 +80,7 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
 
-        channel_name = f"commande-{ticket_num:04d}"
+        channel_name = f"「🔥」commande-{ticket_num:04d}"
         ticket_channel = await guild.create_text_channel(
             name=channel_name,
             category=category,
