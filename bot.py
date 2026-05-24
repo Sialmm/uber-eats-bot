@@ -345,6 +345,16 @@ async def stats(interaction: discord.Interaction):
 # EVENTS
 # ───────────────────────────────────────────────
 @bot.event
+async def on_guild_channel_delete(channel):
+    """Libère le client si le salon ticket est supprimé manuellement."""
+    client_id = ticket_clients.pop(channel.id, None)
+    if client_id:
+        clients_en_cours.discard(client_id)
+        ticket_data.pop(channel.id, None)
+        print(f"🗑️ Ticket supprimé manuellement, client {client_id} libéré.")
+
+
+@bot.event
 async def on_ready():
     print(f"✅ Bot connecté : {bot.user} ({bot.user.id})")
     try:
