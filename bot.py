@@ -8,8 +8,8 @@ from datetime import datetime
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 1507793475549265971
-VENDEUR_ROLE_NAME = "「🧑‍🍳」Vendeur"
+GUILD_ID = 123456789
+VENDEUR_ROLE_NAME = "Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
@@ -246,13 +246,11 @@ class TicketActiveView(discord.ui.View):
                 break
 
         if not lien_trouve:
-            # Décrémenter les stats si elles ont été incrémentées par erreur
-            if vendeur.id in vendeur_stats and vendeur_stats[vendeur.id]["count"] > 0:
-                vendeur_stats[vendeur.id]["count"] = max(0, vendeur_stats[vendeur.id]["count"] - 1)
+            client_id = ticket_clients.get(interaction.channel.id)
+            client_mention = f"<@{client_id}>" if client_id else "Client"
             await interaction.response.send_message(
-                "❌ Aucun lien de suivi Uber Eats détecté !\n"
-                "Envoie le lien de suivi de la commande (`ubereats.com/fr/orders/...`) avant de valider.",
-                ephemeral=True
+                f"{client_mention} Vous avez fait **0 commande**. "
+                f"Aucun lien de suivi Uber Eats n'a été détecté, la commande n'est pas validée."
             )
             return
 
