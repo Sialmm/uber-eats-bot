@@ -13,7 +13,7 @@ CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
-IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
+IMAGE_URL = "https://imgur.com/a/cbZZpkJ"
 # =========================================================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -46,6 +46,62 @@ def overwrites_prise(guild, client, vendeur, vendeur_role):
 
 def overwrites_traitee(guild, client, vendeur, vendeur_role):
     return overwrites_prise(guild, client, vendeur, vendeur_role)
+
+async def envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=True):
+    log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+    if not log_channel:
+        return
+
+    ticket_num = data.get('ticket_num', 0)
+    client_id = data.get('client_id')
+    client_mention = f"<@{client_id}>" if client_id else "Non renseigné"
+    nb_commandes = vendeur_stats.get(vendeur.id, {}).get("count", 0) if valide else 0
+    statut_paiement = "✅ Validé" if valide else "❌ Non validé"
+
+    recap = discord.Embed(
+        title=f"Commande #{ticket_num:04d}",
+        color=discord.Color.green() if valide else discord.Color.red(),
+        timestamp=datetime.now(),
+    )
+    recap.add_field(name="Commande :", value=f"「🔥」commande-{ticket_num:04d}", inline=False)
+    recap.add_field(name="Client :", value=client_mention, inline=True)
+    recap.add_field(name="Vendeur :", value=vendeur.mention if valide else "Non renseigné", inline=True)
+    recap.add_field(name="Moyens de paiement :", value=data.get('paiement', 'Non renseigné'), inline=True)
+    recap.add_field(name="Statut du paiement :", value=statut_paiement, inline=True)
+    recap.add_field(name="Nombre de commandes :", value=str(nb_commandes) if valide else "Non renseigné", inline=True)
+    recap.add_field(name="Adresse :", value=data.get('adresse', 'Non renseigné'), inline=False)
+    recap.add_field(name="Montant HT :", value=data.get('montant', 'Non renseigné'), inline=True)
+    recap.add_field(name="Transcript :", value="voir le fichier joint", inline=True)
+
+    transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
+    file = discord.File(
+        fp=io.BytesIO(transcript_text.encode("utf-8")),
+        filename=f"commande-{ticket_num:04d}-transcript.txt"
+    )
+    try:
+        await log_channel.send(embed=recap, file=file)
+    except Exception as e:
+        print(f"❌ Erreur logs : {e}")
+
+async def recuperer_transcript(channel):
+    transcript_lines = []
+    try:
+        async for msg in channel.history(limit=None, oldest_first=True):
+            timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
+            if msg.content:
+                transcript_lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.content}")
+            if msg.attachments:
+                for att in msg.attachments:
+                    transcript_lines.append(f"[{timestamp}] {msg.author.display_name} a envoyé: {att.url}")
+            if msg.embeds:
+                for emb in msg.embeds:
+                    if emb.description:
+                        transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:300]}")
+                    for field in emb.fields:
+                        transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
+    except Exception as e:
+        transcript_lines.append(f"Erreur : {e}")
+    return transcript_lines
 
 # ───────────────────────────────────────────────
 # MODAL
@@ -104,7 +160,9 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         if vendeur_role:
             mention += f" | {vendeur_role.mention}"
         await ticket_channel.send(content=mention, embed=embed, view=TicketInitView(user_id=user.id))
-        await interaction.followup.send(f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True)
+        msg = await interaction.followup.send(f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True, wait=True)
+        await asyncio.sleep(3)
+        await msg.delete()
 
 # ───────────────────────────────────────────────
 # VIEW 1 — En attente
@@ -142,14 +200,14 @@ class TicketInitView(discord.ui.View):
                 new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
         new_embed.set_image(url=IMAGE_URL)
         await interaction.message.edit(embed=new_embed, view=TicketActiveView(user_id=self.user_id))
-        await interaction.followup.send(f"📦 Commande attribuée à {vendeur.mention}.")
+        await interaction.followup.send(f"Commande attribuée à {vendeur.mention}.")
 
     @discord.ui.button(label="🔒 Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="fermer_init")
     async def fermer(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.", color=0xED4245)
+        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **5 minutes**.", color=0xED4245)
         await interaction.response.send_message(embed=embed)
         client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
@@ -199,7 +257,6 @@ class TicketActiveView(discord.ui.View):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-
         vendeur = interaction.user
         channel = interaction.channel
         guild = interaction.guild
@@ -208,7 +265,7 @@ class TicketActiveView(discord.ui.View):
         client_id = ticket_clients.get(channel.id)
         client_mention = f"<@{client_id}>" if client_id else "Client"
 
-        # Vérifier qu'un lien de suivi Uber Eats a été envoyé
+        # Vérifier lien Uber Eats
         lien_trouve = False
         async for msg in channel.history(limit=100):
             if "ubereats.com/fr/orders/" in msg.content:
@@ -216,15 +273,10 @@ class TicketActiveView(discord.ui.View):
                 break
 
         if not lien_trouve:
-            # Déplacer dans Commandes - Traités
             category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
             client = guild.get_member(client_id) if client_id else None
             if category_traitee:
-                await channel.edit(
-                    category=category_traitee,
-                    overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role),
-                )
-            # Désactiver les boutons
+                await channel.edit(category=category_traitee, overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role))
             old_embed = interaction.message.embeds[0]
             new_embed = discord.Embed(description=old_embed.description, color=discord.Color.red())
             for field in old_embed.fields:
@@ -236,19 +288,20 @@ class TicketActiveView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
             await interaction.response.edit_message(embed=new_embed, view=self)
-            await interaction.followup.send(
-                f"{client_mention} Vous avez fait **0 commande**. "
-                f"Aucun lien de suivi Uber Eats n'a été détecté, la commande n'est pas validée."
-            )
-            # Nettoyage
+            await interaction.followup.send(f"Aucune commande n'a été enregistrée.")
             ticket_clients.pop(channel.id, None)
             clients_en_cours.discard(client_id)
             ticket_data.pop(channel.id, None)
-            await asyncio.sleep(300)
-            try:
-                await channel.delete()
-            except Exception:
-                pass
+
+            async def supprimer_non_valide():
+                await asyncio.sleep(300)
+                transcript_lines = await recuperer_transcript(channel)
+                await envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=False)
+                try:
+                    await channel.delete()
+                except Exception:
+                    pass
+            asyncio.ensure_future(supprimer_non_valide())
             return
 
         await interaction.response.defer()
@@ -260,14 +313,9 @@ class TicketActiveView(discord.ui.View):
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
 
         client = guild.get_member(client_id) if client_id else None
-
-        # Déplacer dans Commandes - Traités
         category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
         if category_traitee:
-            await channel.edit(
-                category=category_traitee,
-                overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role),
-            )
+            await channel.edit(category=category_traitee, overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role))
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=discord.Color.green())
@@ -288,62 +336,18 @@ class TicketActiveView(discord.ui.View):
             f"S'il y a un problème avec la commande, n'hésitez pas à mentionner votre vendeur {vendeur.mention}. À bientôt !"
         )
 
-        # Nettoyage
         ticket_clients.pop(channel.id, None)
         clients_en_cours.discard(client_id)
         ticket_data.pop(channel.id, None)
 
-        # Lancer la suppression + logs dans une tâche séparée
         async def supprimer_apres_delai():
             await asyncio.sleep(300)
-            # Transcript juste avant suppression
-            transcript_lines = []
-            try:
-                async for msg in channel.history(limit=None, oldest_first=True):
-                    timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
-                    if msg.content:
-                        transcript_lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.content}")
-                    if msg.attachments:
-                        for att in msg.attachments:
-                            transcript_lines.append(f"[{timestamp}] {msg.author.display_name} a envoyé: {att.url}")
-                    if msg.embeds:
-                        for emb in msg.embeds:
-                            if emb.description:
-                                transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:300]}")
-                            for field in emb.fields:
-                                transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
-            except Exception as e:
-                transcript_lines.append(f"Erreur : {e}")
-
-            log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
-            if log_channel:
-                recap = discord.Embed(
-                    title=f"📋 Récap — Commande N°{data.get('ticket_num', '?'):04d}",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now(),
-                )
-                recap.add_field(name="👤 Client", value=f"`{data.get('client', '?')}`", inline=True)
-                recap.add_field(name="🧑‍💼 Vendeur", value=f"`{vendeur.display_name}`", inline=True)
-                recap.add_field(name="💰 Montant HT", value=f"`{data.get('montant', '?')}`", inline=True)
-                recap.add_field(name="💳 Paiement", value=f"`{data.get('paiement', '?')}`", inline=True)
-                recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
-                recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
-                try:
-                    await log_channel.send(embed=recap)
-                    transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
-                    file = discord.File(
-                        fp=io.BytesIO(transcript_text.encode("utf-8")),
-                        filename=f"transcript-commande-{data.get('ticket_num', 0):04d}.txt"
-                    )
-                    await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
-                except Exception as e:
-                    print(f"❌ Erreur logs : {e}")
-
+            transcript_lines = await recuperer_transcript(channel)
+            await envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=True)
             try:
                 await channel.delete()
             except Exception:
                 pass
-
         asyncio.ensure_future(supprimer_apres_delai())
 
 # ───────────────────────────────────────────────
