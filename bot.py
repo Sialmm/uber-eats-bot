@@ -238,6 +238,24 @@ class TicketActiveView(discord.ui.View):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
 
+        # Vérifier qu'un lien de suivi Uber Eats a été envoyé
+        lien_trouve = False
+        async for msg in interaction.channel.history(limit=100):
+            if "ubereats.com/fr/orders/" in msg.content:
+                lien_trouve = True
+                break
+
+        if not lien_trouve:
+            # Décrémenter les stats si elles ont été incrémentées par erreur
+            if vendeur.id in vendeur_stats and vendeur_stats[vendeur.id]["count"] > 0:
+                vendeur_stats[vendeur.id]["count"] = max(0, vendeur_stats[vendeur.id]["count"] - 1)
+            await interaction.response.send_message(
+                "❌ Aucun lien de suivi Uber Eats détecté !\n"
+                "Envoie le lien de suivi de la commande (`ubereats.com/fr/orders/...`) avant de valider.",
+                ephemeral=True
+            )
+            return
+
         await interaction.response.defer()
 
         vendeur = interaction.user
@@ -277,9 +295,23 @@ class TicketActiveView(discord.ui.View):
             item.disabled = True
 
         await interaction.message.edit(embed=new_embed, view=self)
-        await interaction.followup.send(f"✅ Commande **traitée** par {vendeur.mention} ! Suppression dans **1 heure**.")
+        client_mention = f"<@{ticket_clients.get(channel.id)}>" if ticket_clients.get(channel.id) else "client"
+        nb_commandes = vendeur_stats.get(vendeur.id, {}).get("count", 1)
+        await interaction.followup.send(
+            f"Merci {client_mention} ! Vous avez fait **{nb_commandes} commande(s)**. "
+            f"N'hésitez pas à envoyer une photo de votre commande une fois reçue dans <#1507797858345287790>, ça nous aide énormément. "
+            f"S'il y a un problème avec la commande, n'hésitez pas à mentionner votre vendeur {vendeur.mention}. À bientôt !"
+        )
 
-        # ── Transcript ──
+        # Nettoyage des données
+        client_id = ticket_clients.pop(channel.id, None)
+        clients_en_cours.discard(client_id)
+        ticket_data.pop(channel.id, None)
+
+        # Attendre 1h avant suppression (les messages continuent d'arriver)
+        await asyncio.sleep(3600)
+
+        # ── Transcript récupéré JUSTE AVANT la suppression ──
         transcript_lines = []
         try:
             async for msg in channel.history(limit=None, oldest_first=True):
@@ -298,7 +330,7 @@ class TicketActiveView(discord.ui.View):
         except Exception as e:
             transcript_lines.append(f"Erreur lors de la récupération des messages : {e}")
 
-        # ── Envoi dans logs ──
+        # ── Envoi dans logs après l'heure d'attente ──
         log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
         if log_channel:
             recap = discord.Embed(
@@ -321,12 +353,7 @@ class TicketActiveView(discord.ui.View):
             )
             await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
 
-        # Nettoyage
-        client_id = ticket_clients.pop(channel.id, None)
-        clients_en_cours.discard(client_id)
-        ticket_data.pop(channel.id, None)
-
-        await asyncio.sleep(3600)
+        # Suppression du salon
         try:
             await channel.delete()
         except Exception:
