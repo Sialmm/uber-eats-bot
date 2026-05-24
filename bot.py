@@ -231,10 +231,17 @@ class TicketActiveView(discord.ui.View):
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
 
-        await channel.edit(
-            category=category_attente,
-            overwrites=overwrites_attente(guild, client, vendeur_role) if client else {},
-        )
+        # Déplacer dans la catégorie attente et resynchroniser les permissions
+        await channel.edit(category=category_attente)
+        await channel.edit(sync_permissions=True)
+        # Remettre l'accès au client
+        if client:
+            await channel.set_permissions(client,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+            )
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
