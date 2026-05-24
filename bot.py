@@ -82,7 +82,7 @@ def overwrites_prise(guild, client, vendeur, vendeur_role):
 class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
     montant = discord.ui.TextInput(
         label="Montant HT (sous-total)",
-        placeholder="Min. 20 HT",
+        placeholder="Min. 20 HT – Max. 23 HT",
         min_length=1, max_length=10, required=True,
     )
     adresse = discord.ui.TextInput(
@@ -111,9 +111,16 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         channel_name = f"commande-{ticket_num:04d}"
         ticket_channel = await guild.create_text_channel(
             name=channel_name,
-            overwrites=overwrites_attente(guild, user, vendeur_role),
             category=category,
             topic=f"Commande de {user.display_name} | N°{ticket_num:04d}",
+        )
+        # Hériter des permissions de la catégorie puis ajouter le client
+        await ticket_channel.edit(sync_permissions=True)
+        await ticket_channel.set_permissions(user,
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
         )
 
         # Stocker l'ID du client
