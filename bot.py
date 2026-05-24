@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import asyncio
 import os
+import io
 from datetime import datetime
 
 # ===================== CONFIGURATION =====================
@@ -12,7 +13,7 @@ VENDEUR_ROLE_NAME = "Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
-LOG_CHANNEL_NAME = "logs-commandes"  # Salon où envoyer le récap (crée-le sur Discord)
+LOG_CHANNEL_NAME = "logs-commandes"
 IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
 
@@ -24,9 +25,9 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 ticket_counter = {"count": 0}
 ticket_clients = {}       # {channel_id: client_id}
-ticket_data = {}          # {channel_id: {montant, adresse, paiement, created_at}}
+ticket_data = {}          # {channel_id: {...}}
 vendeur_stats = {}        # {vendeur_id: {"nom": str, "count": int}}
-clients_en_cours = set()  # set des client_id ayant déjà un ticket ouvert
+clients_en_cours = set()  # client_id ayant un ticket ouvert
 
 
 def is_vendeur(interaction: discord.Interaction) -> bool:
@@ -37,15 +38,22 @@ def is_vendeur(interaction: discord.Interaction) -> bool:
 
 
 def overwrites_prise(guild, client, vendeur, vendeur_role):
+    """Seul le vendeur qui a pris + le client voient."""
     ow = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True),
-        client: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
         vendeur: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True),
     }
+    if client:
+        ow[client] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
     if vendeur_role:
         ow[vendeur_role] = discord.PermissionOverwrite(view_channel=False)
     return ow
+
+
+def overwrites_traitee(guild, client, vendeur, vendeur_role):
+    """Même chose pour Traités — seul le vendeur + client."""
+    return overwrites_prise(guild, client, vendeur, vendeur_role)
 
 
 # ───────────────────────────────────────────────
@@ -61,7 +69,7 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         guild = interaction.guild
         user = interaction.user
 
-        # ── Anti-doublon ──
+        # Anti-doublon
         if user.id in clients_en_cours:
             await interaction.followup.send("❌ Tu as déjà un ticket en cours ! Ferme-le avant d'en ouvrir un nouveau.", ephemeral=True)
             return
@@ -81,7 +89,6 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
         await ticket_channel.edit(sync_permissions=True)
         await ticket_channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
 
-        # Stocker les infos
         ticket_clients[ticket_channel.id] = user.id
         clients_en_cours.add(user.id)
         ticket_data[ticket_channel.id] = {
@@ -93,6 +100,7 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
             "ticket_num": ticket_num,
             "created_at": datetime.now().strftime("%d/%m/%Y à %H:%M"),
             "vendeur": None,
+            "vendeur_member": None,
         }
 
         embed = discord.Embed(
@@ -142,16 +150,19 @@ class TicketInitView(discord.ui.View):
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
 
+        # Permissions strictes : seul ce vendeur + client
         await channel.edit(
             category=category_prise,
-            overwrites=overwrites_prise(guild, client, vendeur, vendeur_role) if client else {},
+            overwrites=overwrites_prise(guild, client, vendeur, vendeur_role),
         )
 
-        # Mettre à jour les stats vendeur
-        if vendeur.id not in vendeur_stats:
-            vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
+        # Stocker le vendeur
         if channel.id in ticket_data:
             ticket_data[channel.id]["vendeur"] = vendeur.display_name
+            ticket_data[channel.id]["vendeur_member"] = vendeur.id
+
+        if vendeur.id not in vendeur_stats:
+            vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
@@ -172,12 +183,14 @@ class TicketInitView(discord.ui.View):
             return
         embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.", color=0xED4245)
         await interaction.response.send_message(embed=embed)
-        client_id = ticket_clients.get(interaction.channel.id)
+        client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
-        ticket_clients.pop(interaction.channel.id, None)
         ticket_data.pop(interaction.channel.id, None)
         await asyncio.sleep(3600)
-        await interaction.channel.delete()
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
 
 
 # ───────────────────────────────────────────────
@@ -225,16 +238,31 @@ class TicketActiveView(discord.ui.View):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
 
+        await interaction.response.defer()
+
         vendeur = interaction.user
         channel = interaction.channel
         guild = interaction.guild
         data = ticket_data.get(channel.id, {})
+        vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
 
-        # Incrémenter les stats
+        # Stats
         if vendeur.id not in vendeur_stats:
             vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
         vendeur_stats[vendeur.id]["count"] += 1
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
+
+        # Récupérer le client
+        client_id = ticket_clients.get(channel.id)
+        client = guild.get_member(client_id) if client_id else None
+
+        # Déplacer dans Commandes - Traités avec permissions strictes
+        category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
+        if category_traitee:
+            await channel.edit(
+                category=category_traitee,
+                overwrites=overwrites_traitee(guild, client, vendeur, vendeur_role),
+            )
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=discord.Color.green())
@@ -248,17 +276,31 @@ class TicketActiveView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-        # Déplacer dans la catégorie Commandes - Traités
-        category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
-        if category_traitee:
-            await channel.edit(category=category_traitee)
-
-        await interaction.response.edit_message(embed=new_embed, view=self)
+        await interaction.message.edit(embed=new_embed, view=self)
         await interaction.followup.send(f"✅ Commande **traitée** par {vendeur.mention} ! Suppression dans **1 heure**.")
 
-        # ── Récap dans le salon logs ──
+        # ── Transcript ──
+        transcript_lines = []
+        try:
+            async for msg in channel.history(limit=None, oldest_first=True):
+                timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
+                if msg.content:
+                    transcript_lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.content}")
+                if msg.attachments:
+                    for att in msg.attachments:
+                        transcript_lines.append(f"[{timestamp}] {msg.author.display_name} a envoyé: {att.url}")
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.description:
+                            transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:300]}")
+                        for field in emb.fields:
+                            transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
+        except Exception as e:
+            transcript_lines.append(f"Erreur lors de la récupération des messages : {e}")
+
+        # ── Envoi dans logs ──
         log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
-        if log_channel and data:
+        if log_channel:
             recap = discord.Embed(
                 title=f"📋 Récap — Commande N°{data.get('ticket_num', '?'):04d}",
                 color=discord.Color.green(),
@@ -272,36 +314,12 @@ class TicketActiveView(discord.ui.View):
             recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
             await log_channel.send(embed=recap)
 
-            # ── Transcript complet de la discussion ──
-            transcript_lines = []
-            async for msg in channel.history(limit=None, oldest_first=True):
-                if msg.author.bot and not msg.embeds:
-                    continue
-                timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
-                author = msg.author.display_name
-                if msg.embeds:
-                    for emb in msg.embeds:
-                        if emb.description:
-                            transcript_lines.append(f"[{timestamp}] [EMBED] {emb.description[:200]}")
-                        for field in emb.fields:
-                            transcript_lines.append(f"[{timestamp}] [EMBED] {field.name}: {field.value.strip('`')}")
-                if msg.content:
-                    transcript_lines.append(f"[{timestamp}] {author}: {msg.content}")
-                if msg.attachments:
-                    for att in msg.attachments:
-                        transcript_lines.append(f"[{timestamp}] {author} a envoyé une image: {att.url}")
-
-            transcript_text = "\n".join(transcript_lines)
-            transcript_bytes = transcript_text.encode("utf-8")
-            import io
+            transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
             file = discord.File(
-                fp=io.BytesIO(transcript_bytes),
-                filename=f"transcript-commande-{data.get('ticket_num', '0'):04d}.txt"
+                fp=io.BytesIO(transcript_text.encode("utf-8")),
+                filename=f"transcript-commande-{data.get('ticket_num', 0):04d}.txt"
             )
-            await log_channel.send(
-                content=f"📄 **Transcript complet — Commande N°{data.get('ticket_num', '?'):04d}**",
-                file=file
-            )
+            await log_channel.send(content=f"📄 **Transcript — Commande N°{data.get('ticket_num', '?'):04d}**", file=file)
 
         # Nettoyage
         client_id = ticket_clients.pop(channel.id, None)
@@ -309,7 +327,10 @@ class TicketActiveView(discord.ui.View):
         ticket_data.pop(channel.id, None)
 
         await asyncio.sleep(3600)
-        await channel.delete()
+        try:
+            await channel.delete()
+        except Exception:
+            pass
 
 
 # ───────────────────────────────────────────────
@@ -358,23 +379,18 @@ async def stats(interaction: discord.Interaction):
     if not is_vendeur(interaction):
         await interaction.response.send_message("❌ Réservé aux vendeurs.", ephemeral=True)
         return
-
     if not vendeur_stats:
         await interaction.response.send_message("📊 Aucune statistique disponible pour le moment.", ephemeral=True)
         return
-
     embed = discord.Embed(title="📊 Statistiques des vendeurs", color=0x5865F2, timestamp=datetime.now())
-
-    # Trier par nombre de commandes
     sorted_stats = sorted(vendeur_stats.items(), key=lambda x: x[1]["count"], reverse=True)
-    classement = ""
     medals = ["🥇", "🥈", "🥉"]
+    classement = ""
     for i, (vid, vdata) in enumerate(sorted_stats):
         medal = medals[i] if i < 3 else f"`#{i+1}`"
         classement += f"{medal} **{vdata['nom']}** — {vdata['count']} commande(s)\n"
-
     embed.add_field(name="Classement", value=classement or "Aucun", inline=False)
-    embed.set_footer(text=f"Total commandes traitées : {sum(v['count'] for v in vendeur_stats.values())}")
+    embed.set_footer(text=f"Total : {sum(v['count'] for v in vendeur_stats.values())} commande(s) traitée(s)")
     await interaction.response.send_message(embed=embed)
 
 
@@ -383,12 +399,10 @@ async def stats(interaction: discord.Interaction):
 # ───────────────────────────────────────────────
 @bot.event
 async def on_guild_channel_delete(channel):
-    """Libère le client si le salon ticket est supprimé manuellement."""
     client_id = ticket_clients.pop(channel.id, None)
     if client_id:
         clients_en_cours.discard(client_id)
         ticket_data.pop(channel.id, None)
-        print(f"🗑️ Ticket supprimé manuellement, client {client_id} libéré.")
 
 
 @bot.event
