@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import asyncio
 import os
+from datetime import datetime
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
@@ -10,7 +11,7 @@ GUILD_ID = 1507793475549265971
 VENDEUR_ROLE_NAME = "Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
-LOG_CHANNEL_ID = None
+LOG_CHANNEL_NAME = "logs-commandes"  # Salon où envoyer le récap (crée-le sur Discord)
 IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
 
@@ -21,8 +22,10 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 ticket_counter = {"count": 0}
-# Stocke l'ID du client par channel : {channel_id: client_id}
-ticket_clients = {}
+ticket_clients = {}       # {channel_id: client_id}
+ticket_data = {}          # {channel_id: {montant, adresse, paiement, created_at}}
+vendeur_stats = {}        # {vendeur_id: {"nom": str, "count": int}}
+clients_en_cours = set()  # set des client_id ayant déjà un ticket ouvert
 
 
 def is_vendeur(interaction: discord.Interaction) -> bool:
@@ -32,46 +35,14 @@ def is_vendeur(interaction: discord.Interaction) -> bool:
     return vendeur_role in interaction.user.roles or interaction.user.guild_permissions.administrator
 
 
-def overwrites_attente(guild, client, vendeur_role):
-    """Permissions pour un ticket en attente — tous les vendeurs voient."""
-    ow = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            manage_channels=True, manage_messages=True,
-        ),
-        client: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, attach_files=True,
-        ),
-    }
-    if vendeur_role:
-        ow[vendeur_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, manage_messages=True,
-        )
-    return ow
-
-
 def overwrites_prise(guild, client, vendeur, vendeur_role):
-    """Permissions pour un ticket pris — seul le vendeur qui a pris voit."""
     ow = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            manage_channels=True, manage_messages=True,
-        ),
-        client: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, attach_files=True,
-        ),
-        vendeur: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, manage_messages=True,
-        ),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True),
+        client: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
+        vendeur: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True),
     }
     if vendeur_role:
-        # Bloquer le rôle entier, le vendeur a sa permission individuelle
         ow[vendeur_role] = discord.PermissionOverwrite(view_channel=False)
     return ow
 
@@ -80,27 +51,19 @@ def overwrites_prise(guild, client, vendeur, vendeur_role):
 # MODAL
 # ───────────────────────────────────────────────
 class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
-    montant = discord.ui.TextInput(
-        label="Montant HT (sous-total)",
-        placeholder="Min. 20 HT – Max. 23 HT",
-        min_length=1, max_length=10, required=True,
-    )
-    adresse = discord.ui.TextInput(
-        label="Adresse complète",
-        placeholder="Numéro, rue, code postal, ville",
-        style=discord.TextStyle.paragraph,
-        min_length=10, max_length=200, required=True,
-    )
-    moyen_paiement = discord.ui.TextInput(
-        label="Moyen de paiement",
-        placeholder="Revolut / PayPal / Virement",
-        min_length=2, max_length=50, required=True,
-    )
+    montant = discord.ui.TextInput(label="Montant HT (sous-total)", placeholder="Min. 20 HT – Max. 23 HT", min_length=1, max_length=10, required=True)
+    adresse = discord.ui.TextInput(label="Adresse complète", placeholder="Numéro, rue, code postal, ville", style=discord.TextStyle.paragraph, min_length=10, max_length=200, required=True)
+    moyen_paiement = discord.ui.TextInput(label="Moyen de paiement", placeholder="Revolut / PayPal / Virement", min_length=2, max_length=50, required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         user = interaction.user
+
+        # ── Anti-doublon ──
+        if user.id in clients_en_cours:
+            await interaction.followup.send("❌ Tu as déjà un ticket en cours ! Ferme-le avant d'en ouvrir un nouveau.", ephemeral=True)
+            return
 
         ticket_counter["count"] += 1
         ticket_num = ticket_counter["count"]
@@ -114,17 +77,22 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
             category=category,
             topic=f"Commande de {user.display_name} | N°{ticket_num:04d}",
         )
-        # Hériter des permissions de la catégorie puis ajouter le client
         await ticket_channel.edit(sync_permissions=True)
-        await ticket_channel.set_permissions(user,
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-            attach_files=True,
-        )
+        await ticket_channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
 
-        # Stocker l'ID du client
+        # Stocker les infos
         ticket_clients[ticket_channel.id] = user.id
+        clients_en_cours.add(user.id)
+        ticket_data[ticket_channel.id] = {
+            "montant": self.montant.value,
+            "adresse": self.adresse.value,
+            "paiement": self.moyen_paiement.value,
+            "client": user.display_name,
+            "client_id": user.id,
+            "ticket_num": ticket_num,
+            "created_at": datetime.now().strftime("%d/%m/%Y à %H:%M"),
+            "vendeur": None,
+        }
 
         embed = discord.Embed(
             description=(
@@ -170,15 +138,19 @@ class TicketInitView(discord.ui.View):
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category_prise = discord.utils.get(guild.categories, name=CATEGORY_PRISE)
 
-        # Récupérer le client
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
 
-        # Appliquer les nouvelles permissions + déplacer
         await channel.edit(
             category=category_prise,
             overwrites=overwrites_prise(guild, client, vendeur, vendeur_role) if client else {},
         )
+
+        # Mettre à jour les stats vendeur
+        if vendeur.id not in vendeur_stats:
+            vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
+        if channel.id in ticket_data:
+            ticket_data[channel.id]["vendeur"] = vendeur.display_name
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
@@ -197,12 +169,12 @@ class TicketInitView(discord.ui.View):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-        embed = discord.Embed(
-            title="🔒 Ticket fermé",
-            description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.",
-            color=0xED4245,
-        )
+        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.", color=0xED4245)
         await interaction.response.send_message(embed=embed)
+        client_id = ticket_clients.get(interaction.channel.id)
+        clients_en_cours.discard(client_id)
+        ticket_clients.pop(interaction.channel.id, None)
+        ticket_data.pop(interaction.channel.id, None)
         await asyncio.sleep(3600)
         await interaction.channel.delete()
 
@@ -225,23 +197,14 @@ class TicketActiveView(discord.ui.View):
 
         guild = interaction.guild
         channel = interaction.channel
-        vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category_attente = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
-
         client_id = ticket_clients.get(channel.id)
         client = guild.get_member(client_id) if client_id else None
 
-        # Déplacer dans la catégorie attente et resynchroniser les permissions
         await channel.edit(category=category_attente)
         await channel.edit(sync_permissions=True)
-        # Remettre l'accès au client
         if client:
-            await channel.set_permissions(client,
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-            )
+            await channel.set_permissions(client, view_channel=True, send_messages=True, read_message_history=True, attach_files=True)
 
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=0x06C167)
@@ -261,11 +224,22 @@ class TicketActiveView(discord.ui.View):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
 
+        vendeur = interaction.user
+        channel = interaction.channel
+        guild = interaction.guild
+        data = ticket_data.get(channel.id, {})
+
+        # Incrémenter les stats
+        if vendeur.id not in vendeur_stats:
+            vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
+        vendeur_stats[vendeur.id]["count"] += 1
+        vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
+
         old_embed = interaction.message.embeds[0]
         new_embed = discord.Embed(description=old_embed.description, color=discord.Color.green())
         for field in old_embed.fields:
             if field.name == "Status":
-                new_embed.add_field(name="Status", value=f"```Traitée (par {interaction.user.display_name})```", inline=False)
+                new_embed.add_field(name="Status", value=f"```Traitée (par {vendeur.display_name})```", inline=False)
             else:
                 new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
         new_embed.set_image(url=IMAGE_URL)
@@ -274,10 +248,31 @@ class TicketActiveView(discord.ui.View):
             item.disabled = True
 
         await interaction.response.edit_message(embed=new_embed, view=self)
-        await interaction.followup.send(f"✅ Commande **traitée** par {interaction.user.mention} ! Suppression dans **1 heure**.")
+        await interaction.followup.send(f"✅ Commande **traitée** par {vendeur.mention} ! Suppression dans **1 heure**.")
+
+        # ── Récap dans le salon logs ──
+        log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+        if log_channel and data:
+            recap = discord.Embed(
+                title=f"📋 Récap — Commande N°{data.get('ticket_num', '?'):04d}",
+                color=discord.Color.green(),
+                timestamp=datetime.now(),
+            )
+            recap.add_field(name="👤 Client", value=f"`{data.get('client', '?')}`", inline=True)
+            recap.add_field(name="🧑‍💼 Vendeur", value=f"`{vendeur.display_name}`", inline=True)
+            recap.add_field(name="💰 Montant HT", value=f"`{data.get('montant', '?')}`", inline=True)
+            recap.add_field(name="💳 Paiement", value=f"`{data.get('paiement', '?')}`", inline=True)
+            recap.add_field(name="📍 Adresse", value=f"```{data.get('adresse', '?')}```", inline=False)
+            recap.set_footer(text=f"Commande créée le {data.get('created_at', '?')}")
+            await log_channel.send(embed=recap)
+
+        # Nettoyage
+        client_id = ticket_clients.pop(channel.id, None)
+        clients_en_cours.discard(client_id)
+        ticket_data.pop(channel.id, None)
+
         await asyncio.sleep(3600)
-        ticket_clients.pop(interaction.channel.id, None)
-        await interaction.channel.delete()
+        await channel.delete()
 
 
 # ───────────────────────────────────────────────
@@ -301,7 +296,6 @@ async def panel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Permission refusée.", ephemeral=True)
         return
-
     embed = discord.Embed(
         title="🛒 Commander",
         description=(
@@ -316,6 +310,35 @@ async def panel(interaction: discord.Interaction):
     embed.set_image(url=IMAGE_URL)
     embed.set_footer(text="⚠️ Ne donne jamais ton mot de passe ni d'informations sensibles.")
     await interaction.response.send_message(embed=embed, view=CommanderView())
+
+
+# ───────────────────────────────────────────────
+# COMMANDE SLASH — /stats
+# ───────────────────────────────────────────────
+@bot.tree.command(name="stats", description="Affiche les statistiques des vendeurs")
+@app_commands.guilds(discord.Object(id=GUILD_ID))
+async def stats(interaction: discord.Interaction):
+    if not is_vendeur(interaction):
+        await interaction.response.send_message("❌ Réservé aux vendeurs.", ephemeral=True)
+        return
+
+    if not vendeur_stats:
+        await interaction.response.send_message("📊 Aucune statistique disponible pour le moment.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="📊 Statistiques des vendeurs", color=0x5865F2, timestamp=datetime.now())
+
+    # Trier par nombre de commandes
+    sorted_stats = sorted(vendeur_stats.items(), key=lambda x: x[1]["count"], reverse=True)
+    classement = ""
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (vid, vdata) in enumerate(sorted_stats):
+        medal = medals[i] if i < 3 else f"`#{i+1}`"
+        classement += f"{medal} **{vdata['nom']}** — {vdata['count']} commande(s)\n"
+
+    embed.add_field(name="Classement", value=classement or "Aucun", inline=False)
+    embed.set_footer(text=f"Total commandes traitées : {sum(v['count'] for v in vendeur_stats.values())}")
+    await interaction.response.send_message(embed=embed)
 
 
 # ───────────────────────────────────────────────
