@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
-GUILD_ID = 123456789
+GUILD_ID = 1507793475549265971
 VENDEUR_ROLE_NAME = "Vendeur"
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
