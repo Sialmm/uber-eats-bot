@@ -13,7 +13,8 @@ CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
-IMAGE_URL = "https://i.imgur.com/K2GtI7n.jpeg"
+CLASSEMENT_CHANNEL_ID = 1507798083466166272  # Salon classement-vendeurs
+IMAGE_URL = "https://i.imgur.com/kugHazj.jpeg"
 # =========================================================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -25,6 +26,7 @@ ticket_clients = {}
 ticket_data = {}
 vendeur_stats = {}
 clients_en_cours = set()
+classement_message_id = None  # ID du message classement en direct
 
 def is_vendeur(interaction: discord.Interaction) -> bool:
     vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
@@ -46,6 +48,47 @@ def overwrites_prise(guild, client, vendeur, vendeur_role):
 
 def overwrites_traitee(guild, client, vendeur, vendeur_role):
     return overwrites_prise(guild, client, vendeur, vendeur_role)
+
+async def mettre_a_jour_classement(guild):
+    global classement_message_id
+    channel = guild.get_channel(CLASSEMENT_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="🏆 Classement des vendeurs",
+        color=0x5865F2,
+        timestamp=datetime.now(),
+    )
+
+    if not vendeur_stats:
+        embed.description = "Aucune commande traitée pour le moment."
+    else:
+        sorted_stats = sorted(vendeur_stats.items(), key=lambda x: x[1]["count"], reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        classement = ""
+        for i, (vid, vdata) in enumerate(sorted_stats):
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            classement += f"{medal} **{vdata['nom']}** — {vdata['count']} commande(s)\n"
+        embed.description = classement
+        embed.set_footer(text=f"Total : {sum(v['count'] for v in vendeur_stats.values())} commande(s) traitée(s) • Mis à jour")
+
+    try:
+        if classement_message_id:
+            try:
+                msg = await channel.fetch_message(classement_message_id)
+                await msg.edit(embed=embed)
+            except discord.NotFound:
+                msg = await channel.send(embed=embed)
+                classement_message_id = msg.id
+        else:
+            # Supprimer les anciens messages du bot
+            await channel.purge(limit=10, check=lambda m: m.author == guild.me)
+            msg = await channel.send(embed=embed)
+            classement_message_id = msg.id
+    except Exception as e:
+        print(f"❌ Erreur classement : {e}")
+
 
 async def envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=True):
     log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
@@ -311,6 +354,7 @@ class TicketActiveView(discord.ui.View):
             vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
         vendeur_stats[vendeur.id]["count"] += 1
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
+        asyncio.ensure_future(mettre_a_jour_classement(guild))
 
         client = guild.get_member(client_id) if client_id else None
         category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
