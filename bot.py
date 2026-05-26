@@ -149,7 +149,7 @@ async def recuperer_transcript(channel):
 # ───────────────────────────────────────────────
 # MODAL
 # ───────────────────────────────────────────────
-class CommandeModal(discord.ui.Modal, title="🛒 Commande Ub3r Eats"):
+class CommandeModal(discord.ui.Modal, title="🛒 Commande Uber Eats"):
     montant = discord.ui.TextInput(label="Montant HT (sous-total)", placeholder="Min. 20 HT – Max. 23 HT", min_length=1, max_length=10, required=True)
     adresse = discord.ui.TextInput(label="Adresse complète", placeholder="Numéro, rue, code postal, ville", style=discord.TextStyle.paragraph, min_length=10, max_length=200, required=True)
     moyen_paiement = discord.ui.TextInput(label="Moyen de paiement", placeholder="Revolut / PayPal / Virement", min_length=2, max_length=50, required=True)
@@ -324,7 +324,7 @@ class TicketActiveView(discord.ui.View):
             new_embed = discord.Embed(description=old_embed.description, color=discord.Color.red())
             for field in old_embed.fields:
                 if field.name == "Status":
-                    new_embed.add_field(name="Status", value="```Non validée```", inline=False)
+                    new_embed.add_field(name="Status", value="```Non validée (pas de lien Uber Eats)```", inline=False)
                 else:
                     new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
             new_embed.set_image(url=IMAGE_URL)
@@ -408,7 +408,7 @@ class CommanderView(discord.ui.View):
 # ───────────────────────────────────────────────
 # COMMANDE SLASH — /panel
 # ───────────────────────────────────────────────
-@bot.tree.command(name="panel", description="Affiche le panneau de commande Ub3r Eats")
+@bot.tree.command(name="panel", description="Affiche le panneau de commande Uber Eats")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 async def panel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
@@ -417,7 +417,7 @@ async def panel(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🛒 Commander",
         description=(
-            "**Commande ton Ub3r Eats à -50%** simplement et rapidement.\n\n"
+            "**Commande ton Uber Eats à -50%** simplement et rapidement.\n\n"
             "Une fois le bouton sélectionné, tu devras renseigner **toutes les informations demandées**. "
             "Dès que c'est complété, **un ticket sera créé automatiquement**.\n\n"
             "Ta commande passera ensuite en attente jusqu'à ce qu'un **vendeur** la prenne en charge.\n\n"
@@ -455,6 +455,16 @@ async def stats(interaction: discord.Interaction):
 # ───────────────────────────────────────────────
 # EVENTS
 # ───────────────────────────────────────────────
+@bot.event
+async def on_member_join(member):
+    role = discord.utils.get(member.guild.roles, name="「🛎️」Client")
+    if role:
+        try:
+            await member.add_roles(role)
+        except Exception as e:
+            print(f"❌ Erreur attribution rôle : {e}")
+
+
 @bot.event
 async def on_guild_channel_delete(channel):
     client_id = ticket_clients.pop(channel.id, None)
