@@ -255,7 +255,7 @@ class TicketInitView(discord.ui.View):
         client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
         ticket_data.pop(interaction.channel.id, None)
-        await asyncio.sleep(300)
+        await asyncio.sleep(3600)
         try:
             await interaction.channel.delete()
         except Exception:
@@ -337,7 +337,7 @@ class TicketActiveView(discord.ui.View):
             ticket_data.pop(channel.id, None)
 
             async def supprimer_non_valide():
-                await asyncio.sleep(300)
+                await asyncio.sleep(3600)
                 transcript_lines = await recuperer_transcript(channel)
                 await envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=False)
                 try:
@@ -385,7 +385,7 @@ class TicketActiveView(discord.ui.View):
         ticket_data.pop(channel.id, None)
 
         async def supprimer_apres_delai():
-            await asyncio.sleep(300)
+            await asyncio.sleep(3600)
             transcript_lines = await recuperer_transcript(channel)
             await envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=True)
             try:
