@@ -13,7 +13,8 @@ CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
-CLASSEMENT_CHANNEL_ID = 1507798083466166272  # Salon classement-vendeurs
+CLASSEMENT_CHANNEL_ID = 1507798083466166272
+CLASSEMENT_CLIENTS_CHANNEL_ID = 1507797845808382082
 IMAGE_URL = "https://i.imgur.com/hk3IxsQ.jpeg"
 # =========================================================
 intents = discord.Intents.default()
@@ -25,8 +26,10 @@ ticket_counter = {"count": 0}
 ticket_clients = {}
 ticket_data = {}
 vendeur_stats = {}
+client_stats = {}  # {client_id: {"nom": str, "count": int}}
 clients_en_cours = set()
-classement_message_id = None  # ID du message classement en direct
+classement_message_id = None
+classement_clients_message_id = None
 
 def is_vendeur(interaction: discord.Interaction) -> bool:
     vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
@@ -54,13 +57,7 @@ async def mettre_a_jour_classement(guild):
     channel = guild.get_channel(CLASSEMENT_CHANNEL_ID)
     if not channel:
         return
-
-    embed = discord.Embed(
-        title="🏆 Classement des vendeurs",
-        color=0x5865F2,
-        timestamp=datetime.now(),
-    )
-
+    embed = discord.Embed(title="🏆 Classement des vendeurs", color=0x5865F2, timestamp=datetime.now())
     if not vendeur_stats:
         embed.description = "Aucune commande traitée pour le moment."
     else:
@@ -72,7 +69,6 @@ async def mettre_a_jour_classement(guild):
             classement += f"{medal} **{vdata['nom']}** — {vdata['count']} commande(s)\n"
         embed.description = classement
         embed.set_footer(text=f"Total : {sum(v['count'] for v in vendeur_stats.values())} commande(s) traitée(s) • Mis à jour")
-
     try:
         if classement_message_id:
             try:
@@ -82,25 +78,53 @@ async def mettre_a_jour_classement(guild):
                 msg = await channel.send(embed=embed)
                 classement_message_id = msg.id
         else:
-            # Supprimer les anciens messages du bot
             await channel.purge(limit=10, check=lambda m: m.author == guild.me)
             msg = await channel.send(embed=embed)
             classement_message_id = msg.id
     except Exception as e:
-        print(f"❌ Erreur classement : {e}")
+        print(f"❌ Erreur classement vendeurs : {e}")
 
+async def mettre_a_jour_classement_clients(guild):
+    global classement_clients_message_id
+    channel = guild.get_channel(CLASSEMENT_CLIENTS_CHANNEL_ID)
+    if not channel:
+        return
+    embed = discord.Embed(title="👑 Classement des clients", color=0xF5A623, timestamp=datetime.now())
+    if not client_stats:
+        embed.description = "Aucune commande passée pour le moment."
+    else:
+        sorted_stats = sorted(client_stats.items(), key=lambda x: x[1]["count"], reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        classement = ""
+        for i, (cid, cdata) in enumerate(sorted_stats):
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            classement += f"{medal} <@{cid}> — {cdata['count']} commande(s)\n"
+        embed.description = classement
+        embed.set_footer(text=f"Total : {sum(v['count'] for v in client_stats.values())} commande(s) passée(s) • Mis à jour")
+    try:
+        if classement_clients_message_id:
+            try:
+                msg = await channel.fetch_message(classement_clients_message_id)
+                await msg.edit(embed=embed)
+            except discord.NotFound:
+                msg = await channel.send(embed=embed)
+                classement_clients_message_id = msg.id
+        else:
+            await channel.purge(limit=10, check=lambda m: m.author == guild.me)
+            msg = await channel.send(embed=embed)
+            classement_clients_message_id = msg.id
+    except Exception as e:
+        print(f"❌ Erreur classement clients : {e}")
 
 async def envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=True):
     log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
     if not log_channel:
         return
-
     ticket_num = data.get('ticket_num', 0)
     client_id = data.get('client_id')
     client_mention = f"<@{client_id}>" if client_id else "Non renseigné"
     nb_commandes = vendeur_stats.get(vendeur.id, {}).get("count", 0) if valide else 0
     statut_paiement = "✅ Validé" if valide else "❌ Non validé"
-
     recap = discord.Embed(
         title=f"Commande #{ticket_num:04d}",
         color=discord.Color.green() if valide else discord.Color.red(),
@@ -115,7 +139,6 @@ async def envoyer_logs(guild, channel, data, vendeur, transcript_lines, valide=T
     recap.add_field(name="Adresse :", value=data.get('adresse', 'Non renseigné'), inline=False)
     recap.add_field(name="Montant HT :", value=data.get('montant', 'Non renseigné'), inline=True)
     recap.add_field(name="Transcript :", value="voir le fichier joint", inline=True)
-
     transcript_text = "\n".join(transcript_lines) if transcript_lines else "Aucun message."
     file = discord.File(
         fp=io.BytesIO(transcript_text.encode("utf-8")),
@@ -250,7 +273,7 @@ class TicketInitView(discord.ui.View):
         if not is_vendeur(interaction):
             await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
             return
-        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **5 minutes**.", color=0xED4245)
+        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.", color=0xED4245)
         await interaction.response.send_message(embed=embed)
         client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
@@ -308,7 +331,6 @@ class TicketActiveView(discord.ui.View):
         client_id = ticket_clients.get(channel.id)
         client_mention = f"<@{client_id}>" if client_id else "Client"
 
-        # Vérifier lien Uber Eats
         lien_trouve = False
         async for msg in channel.history(limit=100):
             if "ubereats.com/fr/orders/" in msg.content:
@@ -349,12 +371,20 @@ class TicketActiveView(discord.ui.View):
 
         await interaction.response.defer()
 
-        # Stats
+        # Stats vendeur
         if vendeur.id not in vendeur_stats:
             vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
         vendeur_stats[vendeur.id]["count"] += 1
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
         asyncio.ensure_future(mettre_a_jour_classement(guild))
+
+        # Stats client
+        if client_id:
+            if client_id not in client_stats:
+                client_stats[client_id] = {"nom": data.get("client", "?"), "count": 0}
+            client_stats[client_id]["count"] += 1
+            client_stats[client_id]["nom"] = data.get("client", "?")
+            asyncio.ensure_future(mettre_a_jour_classement_clients(guild))
 
         client = guild.get_member(client_id) if client_id else None
         category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
@@ -463,7 +493,6 @@ async def on_member_join(member):
             await member.add_roles(role)
         except Exception as e:
             print(f"❌ Erreur attribution rôle : {e}")
-
 
 @bot.event
 async def on_guild_channel_delete(channel):
