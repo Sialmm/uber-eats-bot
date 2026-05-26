@@ -14,7 +14,7 @@ CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
 LOG_CHANNEL_NAME = "logs-commandes"
 CLASSEMENT_CHANNEL_ID = 1507798083466166272  # Salon classement-vendeurs
-IMAGE_URL = "https://i.imgur.com/K2GtI7n.jpeg"
+IMAGE_URL = "https://i.imgur.com/hk3IxsQ.jpeg"
 # =========================================================
 intents = discord.Intents.default()
 intents.message_content = True
