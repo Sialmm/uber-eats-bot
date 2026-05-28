@@ -4,11 +4,15 @@ from discord import app_commands
 import asyncio
 import os
 import io
+import asyncpg
 from datetime import datetime
+
 # ===================== CONFIGURATION =====================
 BOT_TOKEN = os.environ.get("TOKEN", "TON_TOKEN_ICI")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 GUILD_ID = 1507793475549265971
 VENDEUR_ROLE_NAME = "「🧑‍🍳」Vendeur"
+OWNER_ROLES = ["「⚜️」𝐎𝐰𝐧𝐞𝐫", "「⚜️」𝐂𝐨-𝐎𝐰𝐧𝐞𝐫"]
 CATEGORY_ATTENTE = "Commandes - En attente"
 CATEGORY_PRISE = "Commandes - Pris en charges"
 CATEGORY_TRAITEE = "Commandes - Traités"
@@ -17,6 +21,7 @@ CLASSEMENT_CHANNEL_ID = 1507798083466166272
 CLASSEMENT_CLIENTS_CHANNEL_ID = 1507797845808382082
 IMAGE_URL = "https://i.imgur.com/hk3IxsQ.jpeg"
 # =========================================================
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -26,16 +31,88 @@ ticket_counter = {"count": 0}
 ticket_clients = {}
 ticket_data = {}
 vendeur_stats = {}
-client_stats = {}  # {client_id: {"nom": str, "count": int}}
+client_stats = {}
 clients_en_cours = set()
 classement_message_id = None
 classement_clients_message_id = None
+db_pool = None
 
+# ───────────────────────────────────────────────
+# BASE DE DONNÉES
+# ───────────────────────────────────────────────
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS vendeur_stats (
+                user_id BIGINT PRIMARY KEY,
+                nom TEXT,
+                count INTEGER DEFAULT 0
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_stats (
+                user_id BIGINT PRIMARY KEY,
+                nom TEXT,
+                count INTEGER DEFAULT 0
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+    print("✅ Base de données initialisée.")
+
+async def charger_stats():
+    global vendeur_stats, client_stats
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, nom, count FROM vendeur_stats")
+        vendeur_stats = {row["user_id"]: {"nom": row["nom"], "count": row["count"]} for row in rows}
+        rows = await conn.fetch("SELECT user_id, nom, count FROM client_stats")
+        client_stats = {row["user_id"]: {"nom": row["nom"], "count": row["count"]} for row in rows}
+        row = await conn.fetchrow("SELECT value FROM config WHERE key = 'ticket_counter'")
+        if row:
+            ticket_counter["count"] = int(row["value"])
+    print(f"✅ Stats chargées ({len(vendeur_stats)} vendeurs, {len(client_stats)} clients, ticket #{ticket_counter['count']})")
+
+async def sauvegarder_vendeur(user_id, nom, count):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO vendeur_stats (user_id, nom, count)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET nom = $2, count = $3
+        """, user_id, nom, count)
+
+async def sauvegarder_client(user_id, nom, count):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO client_stats (user_id, nom, count)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET nom = $2, count = $3
+        """, user_id, nom, count)
+
+async def sauvegarder_counter():
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO config (key, value) VALUES ('ticket_counter', $1)
+            ON CONFLICT (key) DO UPDATE SET value = $1
+        """, str(ticket_counter["count"]))
+
+# ───────────────────────────────────────────────
+# UTILITAIRES
+# ───────────────────────────────────────────────
 def is_vendeur(interaction: discord.Interaction) -> bool:
     vendeur_role = discord.utils.get(interaction.guild.roles, name=VENDEUR_ROLE_NAME)
     if vendeur_role is None:
         return interaction.user.guild_permissions.administrator
     return vendeur_role in interaction.user.roles or interaction.user.guild_permissions.administrator
+
+def is_owner(interaction: discord.Interaction) -> bool:
+    user_roles = [r.name for r in interaction.user.roles]
+    return any(role in user_roles for role in OWNER_ROLES) or interaction.user.guild_permissions.administrator
 
 def overwrites_prise(guild, client, vendeur, vendeur_role):
     ow = {
@@ -186,12 +263,12 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Ub3r Eats"):
             return
         ticket_counter["count"] += 1
         ticket_num = ticket_counter["count"]
+        await sauvegarder_counter()
         vendeur_role = discord.utils.get(guild.roles, name=VENDEUR_ROLE_NAME)
         category = discord.utils.get(guild.categories, name=CATEGORY_ATTENTE)
         channel_name = f"「🔥」Commande - {ticket_num:04d}"
         ticket_channel = await guild.create_text_channel(
-            name=channel_name,
-            category=category,
+            name=channel_name, category=category,
             topic=f"Commande de {user.display_name} | N°{ticket_num:04d}",
         )
         await ticket_channel.edit(sync_permissions=True)
@@ -199,15 +276,11 @@ class CommandeModal(discord.ui.Modal, title="🛒 Commande Ub3r Eats"):
         ticket_clients[ticket_channel.id] = user.id
         clients_en_cours.add(user.id)
         ticket_data[ticket_channel.id] = {
-            "montant": self.montant.value,
-            "adresse": self.adresse.value,
-            "paiement": self.moyen_paiement.value,
-            "client": user.display_name,
-            "client_id": user.id,
-            "ticket_num": ticket_num,
+            "montant": self.montant.value, "adresse": self.adresse.value,
+            "paiement": self.moyen_paiement.value, "client": user.display_name,
+            "client_id": user.id, "ticket_num": ticket_num,
             "created_at": datetime.now().strftime("%d/%m/%Y à %H:%M"),
-            "vendeur": None,
-            "vendeur_member": None,
+            "vendeur": None, "vendeur_member": None,
         }
         embed = discord.Embed(
             description=(
@@ -270,15 +343,15 @@ class TicketInitView(discord.ui.View):
 
     @discord.ui.button(label="🔒 Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="fermer_init")
     async def fermer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_vendeur(interaction):
-            await interaction.response.send_message("❌ Tu dois avoir le rôle **Vendeur**.", ephemeral=True)
+        if not is_owner(interaction):
+            await interaction.response.send_message("❌ Seuls les **Owner** et **Co-Owner** peuvent fermer un ticket.", ephemeral=True)
             return
-        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **1 heure**.", color=0xED4245)
+        embed = discord.Embed(title="🔒 Ticket fermé", description=f"Fermé par {interaction.user.mention}. Suppression dans **5 secondes**.", color=0xED4245)
         await interaction.response.send_message(embed=embed)
         client_id = ticket_clients.pop(interaction.channel.id, None)
         clients_en_cours.discard(client_id)
         ticket_data.pop(interaction.channel.id, None)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(5)
         try:
             await interaction.channel.delete()
         except Exception:
@@ -353,7 +426,7 @@ class TicketActiveView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
             await interaction.response.edit_message(embed=new_embed, view=self)
-            await interaction.followup.send(f"Aucune commande n'a été enregistrée.")
+            await interaction.followup.send("Aucune commande n'a été enregistrée.")
             ticket_clients.pop(channel.id, None)
             clients_en_cours.discard(client_id)
             ticket_data.pop(channel.id, None)
@@ -376,7 +449,7 @@ class TicketActiveView(discord.ui.View):
             vendeur_stats[vendeur.id] = {"nom": vendeur.display_name, "count": 0}
         vendeur_stats[vendeur.id]["count"] += 1
         vendeur_stats[vendeur.id]["nom"] = vendeur.display_name
-        asyncio.ensure_future(mettre_a_jour_classement(guild))
+        await sauvegarder_vendeur(vendeur.id, vendeur.display_name, vendeur_stats[vendeur.id]["count"])
 
         # Stats client
         if client_id:
@@ -384,7 +457,10 @@ class TicketActiveView(discord.ui.View):
                 client_stats[client_id] = {"nom": data.get("client", "?"), "count": 0}
             client_stats[client_id]["count"] += 1
             client_stats[client_id]["nom"] = data.get("client", "?")
-            asyncio.ensure_future(mettre_a_jour_classement_clients(guild))
+            await sauvegarder_client(client_id, client_stats[client_id]["nom"], client_stats[client_id]["count"])
+
+        asyncio.ensure_future(mettre_a_jour_classement(guild))
+        asyncio.ensure_future(mettre_a_jour_classement_clients(guild))
 
         client = guild.get_member(client_id) if client_id else None
         category_traitee = discord.utils.get(guild.categories, name=CATEGORY_TRAITEE)
@@ -504,6 +580,8 @@ async def on_guild_channel_delete(channel):
 @bot.event
 async def on_ready():
     print(f"✅ Bot connecté : {bot.user} ({bot.user.id})")
+    await init_db()
+    await charger_stats()
     try:
         guild = discord.Object(id=GUILD_ID)
         synced = await bot.tree.sync(guild=guild)
@@ -513,5 +591,9 @@ async def on_ready():
     bot.add_view(CommanderView())
     bot.add_view(TicketInitView(user_id=0))
     bot.add_view(TicketActiveView(user_id=0))
+    await asyncio.sleep(2)
+    for guild in bot.guilds:
+        asyncio.ensure_future(mettre_a_jour_classement(guild))
+        asyncio.ensure_future(mettre_a_jour_classement_clients(guild))
 
 bot.run(BOT_TOKEN)
